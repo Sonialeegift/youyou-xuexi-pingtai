@@ -1480,6 +1480,10 @@
       <input type="password" id="sunAdjPwd" placeholder="请输入密码" autocomplete="off" spellcheck="false" style="width:100%;margin-top:6px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:14px;letter-spacing:3px;" data-page-node-id="oIFsckmzRyEdLpbmms6MQz"/>
     </label>
     <div id="sunAdjErr" style="color:#d23;font-size:12.5px;min-height:16px;margin-top:6px;" data-page-node-id="DheR0dKLsX8aYrfiDtRQwF"></div>
+    <div id="sunAdjLogWrap" style="margin:6px 0 2px;font-size:12.5px;color:var(--muted);line-height:1.8;">
+      <div style="font-weight:600;color:var(--ink,#3a332a);">修改记录（多设备同步）</div>
+      <div id="sunAdjLog"></div>
+    </div>
     <div class="modal-actions" data-page-node-id="uus2nPBYvZG1eg3sYyRDcU">
       <button class="btn" id="sunAdjConfirm" data-page-node-id="TSZG1YKoJxQq9s1Yw3GWAa">应用修改</button>
       <button class="btn ghost" id="sunAdjClose" data-page-node-id="f4DtdiyLmStoAPDL8XJhcx">关闭</button>
@@ -3666,6 +3670,8 @@ function checkInToday(){
   if(!state.checkins) state.checkins={};
   const on=!state.checkins[td];
   state.checkins[td]=on;
+  if(!state.checkinsAt) state.checkinsAt={};
+  state.checkinsAt[td]=Date.now();     /* 记录修改时间，取消打卡也能同步到其它设备 */
   save(); refreshSun();
   toast(on ? `${pIcon()} 打卡成功，收集到 1 抹${pWord()}！` : "已取消今日打卡");
 }
@@ -3673,7 +3679,7 @@ function autoCheckinIfNeeded(){
   if(!planStarted()) return false;
   const td=dateStr(0);
   if(!state.checkins) state.checkins={};
-  if(!state.checkins[td]){ state.checkins[td]=true; save(); refreshSun(); return true; }
+  if(!state.checkins[td]){ state.checkins[td]=true; if(!state.checkinsAt) state.checkinsAt={}; state.checkinsAt[td]=Date.now(); save(); refreshSun(); return true; }
   return false;
 }
 
@@ -3683,16 +3689,30 @@ function openSunAdj(){
   $("#sunAdjAmt").value="1"; $("#sunAdjPwd").value=""; $("#sunAdjErr").textContent="";
   $("#sunAdjTotal").textContent=totalSun();
   $("#sunAdjOffset").textContent=(state.sunAdjust||0);
+  renderSunAdjLog();
   $("#sunAdjModal").style.display="flex";
   try{ $("#sunAdjAmt").focus(); }catch(e){}
 }
 function closeSunAdj(){ $("#sunAdjModal").style.display="none"; }
+function fmtDateTime(ts){ const d=new Date(ts); const p=n=>String(n).padStart(2,"0"); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+/* 手动增减流水：来自所有设备，按时间倒序显示最近 12 条 */
+function renderSunAdjLog(){
+  const box=$("#sunAdjLog"); if(!box) return;
+  const log=(Array.isArray(state.sunLog)?state.sunLog:[]).slice().sort((a,b)=>(b.u||0)-(a.u||0)).slice(0,12);
+  if(!log.length){ box.innerHTML=`<div style="color:var(--muted);">暂无手动调整记录</div>`; return; }
+  box.innerHTML=log.map(x=>{
+    const d=(typeof x.d==="number")?x.d:0;
+    const color=d>=0?"#0f5a3c":"#c0392b";
+    return `<div>${fmtDateTime(x.u||0)}　<span style="color:${color};font-weight:700;">${d>0?"+":""}${d}</span></div>`;
+  }).join("");
+}
 function applySunAdj(){
   const amt=parseInt($("#sunAdjAmt").value,10);
   if(!Number.isFinite(amt) || amt===0){ $("#sunAdjErr").textContent="请输入非零的调整数额"; return; }
   const pwd=$("#sunAdjPwd").value.trim();
   if(pwd!==SUN_ADJ_PWD){ $("#sunAdjErr").textContent="密码错误，无法修改"; $("#sunAdjPwd").value=""; try{ $("#sunAdjPwd").focus(); }catch(e){} return; }
-  state.sunAdjust=(state.sunAdjust||0)+amt; save(); refreshSun();
+  state.sunLog.push({ u:Date.now(), d:amt, k:Math.random().toString(36).slice(2,10) });  /* 记流水：多端按 k 并集，加减都不丢 */
+  syncSunAdjust(); save(); refreshSun();
   toast(`已${amt>0?"增加":"减少"} ${Math.abs(amt)} 抹${pWord()}${amt<0?"（"+amt+"）":""}`);
   closeSunAdj();
 }
@@ -3734,7 +3754,12 @@ function seed(){
     syncGistId:"",
     lastSync:0,
     savedAt:0,
-    sunAdjust:0,          /* 青绿积分手动增减（需密码 0704） */
+    sunAdjust:0,          /* 青绿积分手动增减（需密码 0704）；= sunBase + Σ sunLog.d，由 syncSunAdjust() 维护 */
+    sunBase:0,            /* 手动增减基线（老数据迁移时等于当时的 sunAdjust） */
+    sunLog:[],            /* 手动增减流水 [{u:时间戳,d:增减,k:随机去重键}]，多端按 k 并集合并，避免互相覆盖 */
+    fieldAt:{},           /* 整体型字段（student/cppDict/theme…）的最后修改时间，多端按时间取新 */
+    tomb:{tasks:{},routines:{},weekItems:{},mistakes:{}},  /* 删除墓碑 {id:删除时间}，让「删除」也能跨设备同步 */
+    checkinsAt:{},        /* 打卡日期 -> 最后修改时间，使取消打卡也能同步（不再只做并集） */
     theme:"rivers",        /* 主题：rivers=千里江山（默认） / cat=猫咪 */
   };
 }
@@ -4084,6 +4109,13 @@ function load(){
         s.routines.forEach(r=>{ if(r && r.note===undefined){ r.note=""; _nm2=true; } });
         if(_nm2) changed=true;
       }
+      /* 多端同步所需的新字段：老存档补齐，保证「打卡/删除/修改」都能跨设备同步 */
+      if(!s.fieldAt || typeof s.fieldAt!=="object"){ s.fieldAt={}; changed=true; }
+      if(!s.tomb || typeof s.tomb!=="object"){ s.tomb={}; changed=true; }
+      ["tasks","routines","weekItems","mistakes"].forEach(_k=>{ if(!s.tomb[_k] || typeof s.tomb[_k]!=="object"){ s.tomb[_k]={}; changed=true; } });
+      if(!s.checkinsAt || typeof s.checkinsAt!=="object"){ s.checkinsAt={}; changed=true; }
+      if(!Array.isArray(s.sunLog)){ s.sunLog=[]; changed=true; }
+      if(typeof s.sunBase!=="number" || !isFinite(s.sunBase)){ s.sunBase=(typeof s.sunAdjust==="number"?s.sunAdjust:0); changed=true; }
       return s;
     }
   }catch(e){}
@@ -4168,14 +4200,15 @@ function genWeekTasksForMon(s, mon, minDate){
   return added;
 }
 function genWeekTasksFor(s){ return genWeekTasksForMon(s, getMonday(new Date())); }
-function persistLocal(){ state.savedAt=Date.now(); try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
+/* 保存时先给「内容发生变化」的记录 / 字段打上时间戳，多端据此判断谁更新 */
+function persistLocal(){ try{ bumpChanged(); }catch(e){} state.savedAt=Date.now(); try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} }
 function save(){ persistLocal(); if(state.autoSync && state.syncToken && state.syncGistId) schedulePush(); }
 
 /* ===== 云同步（GitHub 私有 Gist） ===== */
 const GH_API="https://api.github.com";
 const SYNC_DESC="youyou-workbench-sync";
 const SYNC_FILE="state.json";
-const SYNC_FIELDS=["student","subjects","tasks","routines","checkins","mistakes","weekPlan","cppDict","cppCustomWords","sunAdjust","onlineMode","onlineCache","deletedGen","planStart","theme","weekDragMode"];
+const SYNC_FIELDS=["student","subjects","tasks","routines","checkins","checkinsAt","mistakes","weekPlan","cppDict","cppCustomWords","sunAdjust","sunBase","sunLog","onlineMode","onlineCache","deletedGen","planStart","theme","weekDragMode","fieldAt","tomb"];
 function ghAuth(t){ return { "Authorization":"token "+t, "Content-Type":"application/json", "Accept":"application/vnd.github+json" }; }
 async function ghJSON(url, opts){
   const r=await fetch(url, opts);
@@ -4214,29 +4247,224 @@ async function writeSyncGist(token, id, data){
   const body={ files:{[SYNC_FILE]:{content:JSON.stringify(syncPayload(),null,2)} } };
   await ghJSON(`${GH_API}/gists/${id}`, {method:"PATCH", headers:ghAuth(token), body:JSON.stringify(body)});
 }
+/* 本机是否已经有过记录（打过卡 / 完成过任务）——用于判断是不是一台全新的空设备 */
+function localHasRecord(){
+  const ck = state.checkins && Object.keys(state.checkins).some(k=>state.checkins[k]);
+  const tk = Array.isArray(state.tasks) && state.tasks.some(t=>t.done);
+  return !!(ck || tk);
+}
+/* ===== 多端同步：记录级合并 =====
+   每条记录（任务/例行/周计划项/错题/学科进度）带 _u（最后修改时间），合并时按 id 逐条比较，新的覆盖旧的；
+   删除写入墓碑 tomb，使「删除」也能跨设备生效。任何一端的新增 / 修改 / 删除都能同步到另一端。 */
+function recU(o){ return (o && typeof o._u==="number") ? o._u : 0; }
+function snapOf(o){ const c={}; for(const k in o){ if(k==="_u"||k==="icon") continue; c[k]=o[k]; } return JSON.stringify(c); }
+const SYNC_KINDS=["tasks","routines","mistakes","subjects"];
+const SCALAR_FIELDS=["student","theme","onlineMode","weekDragMode","planStart","cppDict","onlineCache","ai"];
+const TOMB_KEEP_DAYS=180;
+function eachRecord(fn){
+  SYNC_KINDS.forEach(k=>{ (Array.isArray(state[k])?state[k]:[]).forEach(o=>{ if(o&&o.id) fn(o,k); }); });
+  const wp=state.weekPlan||{};
+  Object.keys(wp).forEach(k=>{ ((wp[k]&&wp[k].items)||[]).forEach(o=>{ if(o&&o.id) fn(o,"weekItems"); }); });
+}
+let _recSnap=null, _scalarSnap=null;
+/* 首屏 / 每次合并后建立基线：只记录当前内容，不打时间戳，避免整份数据被误判为「刚修改」 */
+function initSnapshots(){
+  _recSnap=new WeakMap(); eachRecord(o=>_recSnap.set(o, snapOf(o)));
+  _scalarSnap={}; SCALAR_FIELDS.forEach(k=>{ _scalarSnap[k]=JSON.stringify(state[k]); });
+}
+/* 保存前调用：内容发生变化的记录 / 字段自动打上新的时间戳，供多端比较 */
+function bumpChanged(){
+  const now=Date.now();
+  if(!_recSnap) _recSnap=new WeakMap();
+  eachRecord(o=>{ const f=snapOf(o); if(_recSnap.get(o)!==f){ _recSnap.set(o,f); o._u=now; } });
+  if(!state.fieldAt || typeof state.fieldAt!=="object") state.fieldAt={};
+  if(!_scalarSnap) _scalarSnap={};
+  SCALAR_FIELDS.forEach(k=>{ const f=JSON.stringify(state[k]); if(_scalarSnap[k]!==f){ _scalarSnap[k]=f; state.fieldAt[k]=now; } });
+}
+/* 删除时记墓碑，让「删除」能同步到其它设备 */
+function tombMark(kind,id){
+  if(!id) return;
+  if(!state.tomb || typeof state.tomb!=="object") state.tomb={};
+  if(!state.tomb[kind] || typeof state.tomb[kind]!=="object") state.tomb[kind]={};
+  state.tomb[kind][id]=Date.now();
+}
+/* 墓碑并集（取时间较新的），并清理过期条目，避免无限增长 */
+function mergeTomb(remoteTomb){
+  if(!state.tomb || typeof state.tomb!=="object") state.tomb={};
+  const rt=(remoteTomb && typeof remoteTomb==="object") ? remoteTomb : {};
+  const kinds={}; Object.keys(state.tomb).forEach(k=>kinds[k]=1); Object.keys(rt).forEach(k=>kinds[k]=1);
+  const cut=Date.now()-TOMB_KEEP_DAYS*86400000;
+  Object.keys(kinds).forEach(k=>{
+    const m=Object.assign({}, state.tomb[k]||{});
+    const r=(rt[k] && typeof rt[k]==="object") ? rt[k] : {};
+    Object.keys(r).forEach(id=>{ if(!m[id] || r[id]>m[id]) m[id]=r[id]; });
+    const keep={}; Object.keys(m).forEach(id=>{ if(m[id]>=cut) keep[id]=m[id]; });
+    state.tomb[k]=keep;
+  });
+}
+function dropTombed(arr, kind){
+  const t=(state.tomb && state.tomb[kind]) || {};
+  /* 墓碑＝用户在某台设备上明确执行的删除，一律生效（含已完成任务，等于撤销该条积分） */
+  return (arr||[]).filter(o=>{ const td=t[o.id]||0; return !(td>recU(o)); });
+}
+/* 同一例行实例（genKey 相同）在多台设备各自生成时 id 不同，合并后会出现重复任务。
+   这里按 genKey 去重：已完成优先（保住积分）、其次取最后修改时间较新的，奖励取较大；已被删除的实例不再保留。 */
+function dedupeGenKeys(arr){
+  const byGen=new Map(), out=[];
+  (arr||[]).forEach(t=>{
+    if(!t) return;
+    if(t.genKey){
+      /* 任一端删过的实例不再重建；但已完成的实例是已到手的积分，作为历史保留 */
+      if(!t.done && Array.isArray(state.deletedGen) && state.deletedGen.indexOf(t.genKey)>=0) return;
+      const prev=byGen.get(t.genKey);
+      if(!prev){ byGen.set(t.genKey, t); out.push(t); return; }
+      let keep = prev;
+      if(t.done && !prev.done) keep=t;
+      else if(!prev.done && recU(t)>recU(prev)) keep=t;
+      if(typeof prev.reward==="number" && typeof keep.reward==="number") keep.reward=Math.max(keep.reward, prev.reward);
+      else if(typeof prev.reward==="number") keep.reward=prev.reward;
+      if(keep!==prev){ const i=out.indexOf(prev); if(i>=0) out[i]=keep; byGen.set(t.genKey, keep); }
+    } else out.push(t);
+  });
+  return out;
+}
+/* 按 id 逐条合并：_u 新的胜出；时间戳相同（老数据）时走 tieBreak 保住积分 */
+function mergeList(kind, remoteArr, tieBreak){
+  const map=new Map();
+  (Array.isArray(state[kind])?state[kind]:[]).forEach(o=>{ if(o&&o.id) map.set(o.id,o); });
+  (Array.isArray(remoteArr)?remoteArr:[]).forEach(ro=>{
+    if(!ro||!ro.id) return;
+    const lo=map.get(ro.id);
+    if(!lo){ map.set(ro.id, ro); return; }
+    const lu=recU(lo), ru=recU(ro);
+    if(ru>lu) map.set(ro.id, ro);
+    else if(ru<lu) map.set(ro.id, lo);
+    else map.set(ro.id, (typeof tieBreak==="function") ? tieBreak(lo,ro) : lo);
+  });
+  return Array.from(map.values());
+}
+/* 时间戳相同时：已完成优先、奖励取较大 —— 已得的青绿积分绝不回退 */
+function tieTask(a,b){
+  const o=Object.assign({},a);
+  if(b.done && !a.done) o.done=true;
+  if(typeof b.reward==="number") o.reward=Math.max(typeof a.reward==="number"?a.reward:0, b.reward);
+  return o;
+}
+function tieWeekItem(a,b){
+  const o=Object.assign({},a);
+  const da=a.done||{}, db=b.done||{};
+  const d={}; Object.keys(da).forEach(k=>d[k]=da[k]); Object.keys(db).forEach(k=>{ d[k]=!!(da[k]||db[k]); });
+  o.done=d;
+  return o;
+}
+/* 打卡：按「最后修改时间」取新，因此取消打卡也能同步；老数据无时间戳时 true 优先，保住历史积分 */
+function mergeCheckins(remote){
+  const lc=(state.checkins && typeof state.checkins==="object") ? state.checkins : {};
+  const rc=(remote.checkins && typeof remote.checkins==="object") ? remote.checkins : {};
+  const la=(state.checkinsAt && typeof state.checkinsAt==="object") ? state.checkinsAt : {};
+  const ra=(remote.checkinsAt && typeof remote.checkinsAt==="object") ? remote.checkinsAt : {};
+  const keys={}; Object.keys(lc).forEach(k=>keys[k]=1); Object.keys(rc).forEach(k=>keys[k]=1);
+  const out={}, outAt={};
+  Object.keys(keys).forEach(d=>{
+    const lu=la[d]||0, ru=ra[d]||0;
+    if(ru>lu){ out[d]=!!rc[d]; outAt[d]=ru; }
+    else if(lu>ru){ out[d]=!!lc[d]; outAt[d]=lu; }
+    else { out[d]=!!(lc[d]||rc[d]); if(lu) outAt[d]=lu; }
+  });
+  state.checkins=out; state.checkinsAt=outAt;
+}
+/* 手动增减：按流水并集累加，任一端加的减的都不会被另一端覆盖（老数据以 sunBase 为基线） */
+function syncSunAdjust(){
+  const base=(typeof state.sunBase==="number" && isFinite(state.sunBase)) ? state.sunBase : 0;
+  const add=(Array.isArray(state.sunLog)?state.sunLog:[]).reduce((a,x)=>a+(x && typeof x.d==="number"?x.d:0),0);
+  state.sunAdjust=base+add;
+}
+function mergeSunLog(remote){
+  if(!Array.isArray(state.sunLog)) state.sunLog=[];
+  const seen={}; state.sunLog.forEach(x=>{ if(x&&x.k) seen[x.k]=1; });
+  (Array.isArray(remote.sunLog)?remote.sunLog:[]).forEach(x=>{ if(x&&x.k&&!seen[x.k]){ state.sunLog.push(x); seen[x.k]=1; } });
+  if(typeof remote.sunBase==="number" && isFinite(remote.sunBase)) state.sunBase=Math.max(state.sunBase||0, remote.sunBase);
+  syncSunAdjust();
+}
+function mergeWeekPlan(remoteWP){
+  const out=(state.weekPlan && typeof state.weekPlan==="object") ? state.weekPlan : {};
+  const rwp=(remoteWP && typeof remoteWP==="object") ? remoteWP : {};
+  Object.keys(rwp).forEach(k=>{
+    const map=new Map();
+    ((out[k]&&out[k].items)||[]).forEach(o=>{ if(o&&o.id) map.set(o.id,o); });
+    ((rwp[k]&&rwp[k].items)||[]).forEach(ro=>{
+      if(!ro||!ro.id) return;
+      const lo=map.get(ro.id);
+      if(!lo){ map.set(ro.id,ro); return; }
+      const lu=recU(lo), ru=recU(ro);
+      if(ru>lu) map.set(ro.id,ro);
+      else if(ru===lu) map.set(ro.id, tieWeekItem(lo,ro));
+    });
+    out[k]={ items: dropTombed(Array.from(map.values()),"weekItems") };
+  });
+  state.weekPlan=out;
+}
 function applyRemote(remote){
+  if(!remote) return;
   const keep={ autoSync:state.autoSync, syncToken:state.syncToken, syncGistId:state.syncGistId, lastSync:state.lastSync };
-  /* 加性字段（自定义单词、已删周期实例）：永不整体覆盖，只走下方并集合并，避免任一端新增/删除被对端回退 */
-  const ADDITIVE=["cppCustomWords","deletedGen"];
-  /* 非加性字段：仅在云端更新（savedAt 更大）时整体覆盖，避免覆盖本地较新的编辑（如任务/打卡） */
-  if(remote.savedAt && remote.savedAt > (state.savedAt||0)){
-    SYNC_FIELDS.forEach(k=>{ if(ADDITIVE.indexOf(k)>=0) return; if(k in remote) state[k]=remote[k]; });
+  /* ① 新设备 / 刚清过数据：整份采用云端，最快恢复历史 */
+  if(!localHasRecord() && (remote.tasks || remote.checkins)){
+    SYNC_FIELDS.forEach(k=>{ if(k in remote) state[k]=remote[k]; });
+    if(!state.fieldAt || typeof state.fieldAt!=="object") state.fieldAt={};
+    if(!state.tomb || typeof state.tomb!=="object") state.tomb={tasks:{},routines:{},weekItems:{},mistakes:{}};
+    if(!state.checkinsAt || typeof state.checkinsAt!=="object") state.checkinsAt={};
+    if(!Array.isArray(state.sunLog)) state.sunLog=[];
+    if(typeof state.sunBase!=="number") state.sunBase=state.sunAdjust||0;
+    syncSunAdjust();
+    Object.assign(state, keep);
+    state.savedAt = Math.max(remote.savedAt||0, state.savedAt||0);
+    initSnapshots();
+    return;
   }
-  /* 加性数据：始终并集合并，保证「Other Key Words 自定义单词」等多端新增不丢、互不被覆盖 */
+  /* ② 记录级合并：新增 / 修改 / 删除 双向生效，不再「谁最后保存谁覆盖全部」 */
+  mergeTomb(remote.tomb);
+  state.tasks    = dedupeGenKeys(dropTombed(mergeList("tasks",    remote.tasks,    tieTask), "tasks"));
+  state.routines = dropTombed(mergeList("routines", remote.routines),          "routines");
+  state.mistakes = dropTombed(mergeList("mistakes", remote.mistakes),          "mistakes");
+  state.subjects = dropTombed(mergeList("subjects", remote.subjects),          "subjects");
+  mergeWeekPlan(remote.weekPlan);
+  /* ③ 打卡：按最后修改时间取新，取消打卡也能同步 */
+  mergeCheckins(remote);
+  /* ④ 手动增减：按流水并集累加，两头的加/减都算数 */
+  mergeSunLog(remote);
+  /* ⑤ 整体型字段（学生信息 / 主题 / 听写进度…）：按各自最后修改时间取新 */
+  const rfa=(remote.fieldAt && typeof remote.fieldAt==="object") ? remote.fieldAt : {};
+  if(!state.fieldAt || typeof state.fieldAt!=="object") state.fieldAt={};
+  SCALAR_FIELDS.forEach(k=>{
+    const ru=rfa[k]||0, lu=state.fieldAt[k]||0;
+    if(ru>lu && (k in remote)){ state[k]=remote[k]; state.fieldAt[k]=ru; }
+  });
+  /* ⑥ 加性数据：始终并集，任一端的新增 / 已删实例都不会被回退 */
   if(Array.isArray(remote.cppCustomWords)){
+    if(!Array.isArray(state.cppCustomWords)) state.cppCustomWords=[];
     const low=(state.cppCustomWords||[]).map(x=>String(x).toLowerCase());
     remote.cppCustomWords.forEach(w=>{ const s=String(w); if(low.indexOf(s.toLowerCase())===-1){ state.cppCustomWords.push(s); low.push(s.toLowerCase()); } });
   }
-  /* 加性数据：已删除的周期性生成任务 genKey 同样并集合并，确保任一端删除的实例在其它端也保持删除 */
   if(Array.isArray(remote.deletedGen)){
     if(!Array.isArray(state.deletedGen)) state.deletedGen=[];
     remote.deletedGen.forEach(g=>{ if(state.deletedGen.indexOf(g)===-1) state.deletedGen.push(g); });
   }
   Object.assign(state, keep);
   state.savedAt = Math.max(remote.savedAt||0, state.savedAt||0);
+  initSnapshots();   /* 合并后重建基线，避免下一次保存把刚合并来的数据误判为「本机修改」而反向覆盖云端 */
 }
-async function doPush(){
-  if(!state.autoSync || !state.syncToken) return;
+/* 只拉取并合并、不上传。doPush 前调用：把云端的新数据并入本端，避免「整份覆盖上传」把其它设备刚存的改动冲掉 */
+let _pushing=false;
+async function pullMergeSilent(){
+  if(!state.autoSync || !state.syncToken || !state.syncGistId) return;
+  try{
+    const remote=await readSyncGist(state.syncToken, state.syncGistId);
+    if(remote){ applyRemote(remote); persistLocal(); }
+  }catch(e){}
+}
+async function doPush(force){
+  if(!state.autoSync || !state.syncToken || _pushing) return;
+  _pushing=true;
   try{
     persistLocal();      /* 刷新 savedAt：本次上传的版本即为最新版本，其它设备拉取时能正确应用 */
     if(!state.syncGistId){
@@ -4244,10 +4472,19 @@ async function doPush(){
       state.syncGistId = id || await createSyncGist(state.syncToken, state);
       persistLocal();
     }
+    /* 保护：本机一条记录都没有、而云端有数据 → 跳过上传，避免把云端清成空（新设备最容易踩） */
+    if(!force && !localHasRecord()){
+      const remote=await readSyncGist(state.syncToken, state.syncGistId);
+      const rHas = remote && ((remote.checkins && Object.keys(remote.checkins).some(k=>remote.checkins[k])) || (Array.isArray(remote.tasks) && remote.tasks.some(t=>t.done)));
+      if(rHas){ syncStatusUI("本机暂无记录，已跳过上传（防止清空云端）", false); return; }
+    }
+    /* 上传前先并入云端数据：多台设备同时改动时，后上传的这一份会包含先上传那台的改动，不会互相冲掉 */
+    if(!force){ await pullMergeSilent(); persistLocal(); }
     await writeSyncGist(state.syncToken, state.syncGistId, state);
     state.lastSync=Date.now();
     syncStatusUI("已同步 "+fmtTime(state.lastSync), true);
   }catch(e){ syncStatusUI("同步失败："+e.message, false); }
+  finally{ _pushing=false; }
 }
 async function doPull(){
   if(!state.autoSync || !state.syncToken) return;
@@ -4259,8 +4496,8 @@ async function doPull(){
     }
     const remote=await readSyncGist(state.syncToken, state.syncGistId);
     if(remote){
-      /* 始终应用：applyRemote 内部对非加性字段按 savedAt 覆盖、对自定义单词始终并集，
-         因此即使本机较新，也能收到其他设备新增的 Other Key Words，而不会彼此覆盖丢失 */
+      /* 双向同步：拉取 → 合并 → 回传。合并是「记录级」的（新增/修改/删除逐条比较），
+         因此无论哪一端更新，另一端的改动（打卡、任务、周计划、错题、手动增减）都不会丢 */
       applyRemote(remote); persistLocal(); rerenderAll(); syncStatusUI("已同步云端数据", true);
       await doPush();
     }else{
@@ -4358,6 +4595,7 @@ function openSyncModal(){
   $("#syncModal").style.display="flex";
 }
 let state = load();
+try{ initSnapshots(); syncSunAdjust(); }catch(e){}   /* 建立变更基线（首屏不算修改）；按流水重算手动增减 */
 
 /* ===== 工具 ===== */
 const $ = s=>document.querySelector(s);
@@ -5031,7 +5269,7 @@ function renderSubjectMistakes(subj){
     const m=state.mistakes.find(x=>x.id===el.dataset.id); if(!m) return; m.status=(m.status+1)%3; save(); renderSubjectMistakes(subj); };
   });
   wrap.querySelectorAll(".mistake .del").forEach(el=>{ el.onclick=()=>{
-    state.mistakes=state.mistakes.filter(x=>x.id!==el.dataset.del); save(); renderSubjectMistakes(subj); toast("已删除"); };
+    state.mistakes=state.mistakes.filter(x=>{ if(x.id===el.dataset.del){ tombMark("mistakes", x.id); return false; } return true; }); save(); renderSubjectMistakes(subj); toast("已删除"); };
   });
   wrap.querySelectorAll(".mistake .mimg[data-zoom]").forEach(el=>{ el.onclick=()=>openZoom(decodeURIComponent(el.dataset.zoom)); });
 }
@@ -5215,9 +5453,14 @@ function renderRoutines(){
     const from=dateStr(1);   // 明天 00:00 起视为「未来」
     let removed=0;
     state.routines=state.routines.filter(x=>x.id!==id);
+    tombMark("routines", id);   /* 让「删除例行」同步到其它设备 */
     if(Array.isArray(state.tasks)){
       state.tasks=state.tasks.filter(t=>{
-        if(t.genKey && t.genKey.split("@")[0]===id && t.due && t.due>=from){ removed++; return false; }
+        if(t.genKey && t.genKey.split("@")[0]===id && t.due && t.due>=from){
+          removed++; tombMark("tasks", t.id);
+          if(t.genKey && state.deletedGen && state.deletedGen.indexOf(t.genKey)===-1) state.deletedGen.push(t.genKey);
+          return false;
+        }
         return true;
       });
     }
@@ -5297,11 +5540,12 @@ function renderWeekPlan(){
   document.querySelectorAll("#weekGrid .wi").forEach(el=>{ el.onclick=e=>{
     const day=+el.dataset.day;
     if(e.target.classList.contains("wedit")){ openWeekPlanEdit(k, el.dataset.id); return; }
-    if(e.target.classList.contains("wdel")){ state.weekPlan[k].items=state.weekPlan[k].items.filter(x=>x.id!==el.dataset.id); save(); renderWeekPlan(); return; }
+    if(e.target.classList.contains("wdel")){ const _wid=el.dataset.id; tombMark("weekItems", _wid); state.weekPlan[k].items=state.weekPlan[k].items.filter(x=>x.id!==_wid); save(); renderWeekPlan(); return; }
     if(e.target.classList.contains("conv")){
       const it=state.weekPlan[k].items.find(x=>x.id===el.dataset.id);
       const sel=document.querySelector(`#weekGrid select[data-tsel="${day}"]`);
       state.tasks.push({id:tid(),title:it.text,subj:sel.value,due:dueOfDay(mon,day),pri:"low",done:false,note:""});
+      tombMark("weekItems", el.dataset.id);   /* 转为任务后原计划项在其它设备也应消失 */
       state.weekPlan[k].items=state.weekPlan[k].items.filter(x=>x.id!==el.dataset.id);
       save(); renderWeekPlan(); renderTasks("yuwen"); renderTasks("shuxue"); renderTasks("cpp3"); renderStats(); renderOvTasks(); toast("已转为任务 🐱"); return; }
     const it=state.weekPlan[k].items.find(x=>x.id===el.dataset.id);
@@ -5318,7 +5562,7 @@ function renderWeekPlan(){
       const t=state.tasks.find(x=>x.id===id);
       // 周期性生成的任务：记录其 genKey，使「删除某天实例」在后续重新生成时持久生效（否则会立刻复活）
       if(t && t.genKey){ if(!Array.isArray(state.deletedGen)) state.deletedGen=[]; if(!state.deletedGen.includes(t.genKey)) state.deletedGen.push(t.genKey); }
-      state.tasks=state.tasks.filter(x=>x.id!==id); save(); renderWeekPlan(); renderTasks("yuwen"); renderTasks("shuxue"); renderTasks("cpp3"); renderOvTasks(); renderStats(); toast("已删除任务"); return;
+      tombMark("tasks", id); state.tasks=state.tasks.filter(x=>x.id!==id); save(); renderWeekPlan(); renderTasks("yuwen"); renderTasks("shuxue"); renderTasks("cpp3"); renderOvTasks(); renderStats(); toast("已删除任务"); return;
     }
     const t=state.tasks.find(x=>x.id===el.dataset.tid); if(!t) return;
     const r=taskRoutine(t);
@@ -5415,7 +5659,7 @@ function bindWeekPlanEdit(){
   };
   $("#wpeDelete").onclick=()=>{
     if(!_wpeCtx) return;
-    const wk=state.weekPlan[_wpeCtx.k]; if(wk) wk.items=wk.items.filter(x=>x.id!==_wpeCtx.id);
+    const wk=state.weekPlan[_wpeCtx.k]; if(wk){ tombMark("weekItems", _wpeCtx.id); wk.items=wk.items.filter(x=>x.id!==_wpeCtx.id); }
     save(); closeWeekPlanEdit(); renderWeekPlan(); renderTasks("yuwen"); renderTasks("shuxue"); renderTasks("cpp3"); renderStats(); renderOvTasks(); toast("已删除计划");
   };
   $("#wpeCancel").onclick=closeWeekPlanEdit;
@@ -6032,7 +6276,7 @@ function bind(){
         const _do=()=>{ t.done=!t.done; if(t.done) autoCheckinIfNeeded(); save(); renderTasks(subj); renderOvTasks(); renderStats(); refreshSun(); };
         guardTaskAction(t, _do, "这是非当日任务，修改打卡记录需要家长验证。");
       }
-      if(act==="del"){ state.tasks=state.tasks.filter(x=>x.id!==row.dataset.id); save(); renderTasks(subj); renderOvTasks(); renderStats(); refreshSun(); toast("已删除"); }
+      if(act==="del"){ const _tid=row.dataset.id; const _t=state.tasks.find(x=>x.id===_tid); tombMark("tasks", _tid); if(_t&&_t.genKey&&state.deletedGen&&state.deletedGen.indexOf(_t.genKey)===-1) state.deletedGen.push(_t.genKey); state.tasks=state.tasks.filter(x=>x.id!==_tid); save(); renderTasks(subj); renderOvTasks(); renderStats(); refreshSun(); toast("已删除"); }
     });
   });
 
@@ -6073,8 +6317,10 @@ function bind(){
   $("#syncUpBtn").onclick=()=>{
     if(!state.syncToken){ toast("请先填写 GitHub Token"); return; }
     if(!state.autoSync){ state.autoSync=true; $("#autoSyncChk").checked=true; save(); }
-    const ok=(typeof confirm==="function")?confirm("将用「本设备」的数据覆盖云端，其它设备下次打开时会拉取到这份数据。确定继续？"):true;
-    if(ok) doPush();
+    const ok=(typeof confirm==="function")?confirm("将用「本设备」的数据为准更新云端（会保留其它设备上本端没有的记录）。确定继续？"):true;
+    if(!ok) return;
+    /* 先拉取合并、再强制上传：既以本端为准，又不会把其它设备独有的记录冲掉 */
+    (async()=>{ try{ await doPull(); }catch(e){} doPush(true); })();
   };
   $("#genCodeBtn").onclick=genSyncCode;
   $("#applyCodeBtn").onclick=applySyncCode;
