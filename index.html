@@ -1390,9 +1390,13 @@
     <div class="modal-tip" data-page-node-id="hRPisngU99eMr0vGiGOjr9">获取步骤：登录 github.com → 右上角头像 → <b data-page-node-id="VujZM70lOFwpAfXiBIG7f6">Settings</b> → <b data-page-node-id="QhiJdl6dAhEQUh8pWaUtVK">Developer settings</b> → <b data-page-node-id="9J0Px9CBMp5av6HCG4otjc">Personal access tokens</b> → <b data-page-node-id="WUiXO7rZQtxis8gO5OvEmx">Tokens (classic)</b> → <b data-page-node-id="KIbjSwTxXeeYeMiCb7bQBp">Generate new token (classic)</b> → 只勾选 <b data-page-node-id="PHNdRb2Ec9dTDNTUDIKaZQ">gist</b> → 生成并复制。</div>
     <label class="row" data-page-node-id="wqaDBimZEztc1qszVXT53n"><input type="checkbox" id="autoSyncChk" data-page-node-id="sjq3ss3xvGvUtJrEiFz4RU"/> 开启自动同步（每次改动自动上传；打开页面时自动拉取）</label>
     <div class="sync-line" data-page-node-id="5TdYFHtT8PYbrSNPfAOOj9">状态：<span id="syncState" class="sync-state" data-page-node-id="ozDLKGwNalVeyTPyXD3cCM">未连接</span></div>
+    <div class="sync-line" data-page-node-id="codeLine">同步码（无 Token 也能同步）：<a id="genCodeBtn" class="link" data-page-node-id="genCodeA">生成</a> · <a id="applyCodeBtn" class="link" data-page-node-id="applyCodeA">导入</a></div>
+    <textarea id="syncCodeBox" rows="4" placeholder="点「生成」得到一长串同步码 → 在另一台设备粘贴到这里 → 点「导入」" style="display:none;width:100%;margin-top:8px;font-size:11px;line-height:1.5" data-page-node-id="syncCodeBox"></textarea>
+    <div class="modal-tip" data-page-node-id="codeTip">同步码 ≈ 一整份数据的压缩包，用微信/备忘录传给自己即可，不经过任何服务器。</div>
     <div class="sync-line" data-page-node-id="qzXmYb45D6CRDxIT8uTGnW">同步码：<code id="syncCode" data-page-node-id="SK7bTavckBNG2XHjoEzNPo">—</code> <a id="copyCode" class="link" data-page-node-id="8U9supSK30HDw69RahltlV">复制</a></div>
     <div class="modal-actions" data-page-node-id="JcRx9by8RcBUd6ebj1wuvw">
       <button id="syncNowBtn" class="btn" data-page-node-id="tvVHfI1jta2GyDdYj0FxFi">立即同步</button>
+      <button id="syncUpBtn" class="btn ghost" data-page-node-id="up2cloudBtn">⬆️ 以本端为准上传</button>
       <button id="backupBtn" class="btn ghost" data-page-node-id="HqPZ24juZ8VXeoCEdilJuK">下载备份</button>
       <button id="restoreBtn" class="btn ghost" data-page-node-id="2pZapTLCxS4u6FJKx6xGCX">恢复备份</button>
       <button id="closeSync" class="btn ghost" data-page-node-id="ac5Vt0LFNoD8Zl4slAbKGC">关闭</button>
@@ -3992,7 +3996,7 @@ function load(){
       /* 移除语文「作文」例行任务（用户要求去掉），并清理已生成的对应任务 */
       if(Array.isArray(s.routines)){
         const beforeLen=s.routines.length;
-        s.routines=s.routines.filter(r=>r.id!=="r_yw_5");
+        s.routines=s.routines.filter(r=>!(r.id==="r_yw_5" && (r.title||"").indexOf("作文")>=0));
         if(s.routines.length!==beforeLen){
           changed=true;
           if(Array.isArray(s.tasks)){
@@ -4234,6 +4238,7 @@ function applyRemote(remote){
 async function doPush(){
   if(!state.autoSync || !state.syncToken) return;
   try{
+    persistLocal();      /* 刷新 savedAt：本次上传的版本即为最新版本，其它设备拉取时能正确应用 */
     if(!state.syncGistId){
       const id=await findSyncGist(state.syncToken);
       state.syncGistId = id || await createSyncGist(state.syncToken, state);
@@ -4292,6 +4297,59 @@ function handleRestore(e){
     if(state.autoSync && state.syncToken) doPush();
   }catch(err){ toast("备份文件无法解析"); } };
   reader.readAsText(f); e.target.value="";
+}
+/* ===== 同步码：不用 Token 的多设备同步（整份数据压缩成一段文本，自己复制粘贴） ===== */
+function _b64enc(u8){ let s=""; const CH=0x8000; for(let i=0;i<u8.length;i+=CH) s+=String.fromCharCode.apply(null, u8.subarray(i,i+CH)); return btoa(s); }
+function _b64dec(str){ const s=atob(str); const u=new Uint8Array(s.length); for(let i=0;i<s.length;i++) u[i]=s.charCodeAt(i); return u; }
+async function packState(){
+  const p=JSON.parse(JSON.stringify(state)); delete p.syncToken; delete p.syncGistId;
+  const bytes=new TextEncoder().encode(JSON.stringify(p));
+  if(typeof CompressionStream==="function"){
+    try{
+      const cs=new CompressionStream("deflate-raw");
+      const w=cs.writable.getWriter(); w.write(bytes); w.close();
+      const buf=await new Response(cs.readable).arrayBuffer();
+      return "Z"+_b64enc(new Uint8Array(buf));
+    }catch(e){}
+  }
+  return "R"+_b64enc(bytes);          /* 老浏览器降级：不压缩 */
+}
+async function unpackState(s){
+  s=String(s||"").trim();
+  const tag=s.charAt(0), bin=_b64dec(s.slice(1));
+  if(tag==="Z" && typeof DecompressionStream==="function"){
+    const ds=new DecompressionStream("deflate-raw");
+    const w=ds.writable.getWriter(); w.write(bin); w.close();
+    const buf=await new Response(ds.readable).arrayBuffer();
+    return JSON.parse(new TextDecoder().decode(buf));
+  }
+  return JSON.parse(new TextDecoder().decode(bin));
+}
+async function genSyncCode(){
+  const box=$("#syncCodeBox"); if(!box) return;
+  box.style.display="block"; box.value="生成中…";
+  try{
+    const code=await packState();
+    box.value=code;
+    try{ box.select(); document.execCommand("copy"); toast("同步码已生成并复制（"+Math.round(code.length/1024)+"KB）"); }
+    catch(e){ toast("同步码已生成，请手动全选复制"); }
+  }catch(e){ box.value="生成失败："+e.message; }
+}
+async function applySyncCode(){
+  const box=$("#syncCodeBox"); if(!box) return;
+  const v=(box.value||"").trim();
+  if(!v){ box.style.display="block"; toast("请先把同步码粘贴到下方文本框"); return; }
+  try{
+    const obj=await unpackState(v);
+    if(!obj || !obj.subjects) throw new Error("内容不是工作台存档");
+    const ok=(typeof confirm==="function")?confirm("导入后本机数据会被这份同步码里的数据替换。确定继续？"):true;
+    if(!ok) return;
+    const keep={ autoSync:state.autoSync, syncToken:state.syncToken, syncGistId:state.syncGistId, lastSync:state.lastSync };
+    Object.keys(state).forEach(k=>{ if(!(k in keep)) delete state[k]; });
+    Object.assign(state, obj, keep);
+    state.savedAt=Date.now();
+    save(); rerenderAll(); toast("已导入同步码 🐱");
+  }catch(e){ toast("同步码无效："+e.message); }
 }
 function openSyncModal(){
   $("#syncTokenInput").value=state.syncToken||"";
@@ -6011,6 +6069,15 @@ function bind(){
     doPull();   /* 先拉后推，真正双向同步（自定义单词的并集合并在 applyRemote 内完成） */
   };
   $("#copyCode").onclick=()=>{ if(state.syncGistId && navigator.clipboard){ navigator.clipboard.writeText(state.syncGistId); toast("同步码已复制"); } };
+  /* 以本端为准上传：用于「刚恢复备份 / 本设备数据最全」时强制覆盖云端 */
+  $("#syncUpBtn").onclick=()=>{
+    if(!state.syncToken){ toast("请先填写 GitHub Token"); return; }
+    if(!state.autoSync){ state.autoSync=true; $("#autoSyncChk").checked=true; save(); }
+    const ok=(typeof confirm==="function")?confirm("将用「本设备」的数据覆盖云端，其它设备下次打开时会拉取到这份数据。确定继续？"):true;
+    if(ok) doPush();
+  };
+  $("#genCodeBtn").onclick=genSyncCode;
+  $("#applyCodeBtn").onclick=applySyncCode;
   $("#backupBtn").onclick=downloadBackup;
   $("#restoreBtn").onclick=()=>$("#restoreFile").click();
   $("#restoreFile").onchange=handleRestore;
@@ -6058,7 +6125,12 @@ function init(){
   bind(); bindPomo(); bindLockModal();
   /* 云同步：开启则启动后自动拉取 */
   syncStatusUI(state.syncGistId?"已连接":"未连接", !!state.syncGistId);
-  if(state.autoSync && state.syncToken){ doPull(); }
+  if(state.autoSync && state.syncToken){
+    doPull();
+    /* 多设备：每 3 分钟自动拉取一次；切回页面时立即拉取（页面在后台时不打扰） */
+    setInterval(()=>{ if(state.autoSync && state.syncToken && !document.hidden) doPull(); }, 3*60*1000);
+    document.addEventListener("visibilitychange", ()=>{ if(!document.hidden && state.autoSync && state.syncToken) doPull(); });
+  }
 }
 init();
 </script>
