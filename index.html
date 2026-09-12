@@ -339,6 +339,7 @@
   body.theme-catdark .word-row.pass .wname{ color:#a9f0c2; }
   body.theme-catdark .word-row.fail .wname{ color:#ff9f8a; }
   body.theme-catdark .word-row .wcount{ color:#ff9f8a; background:#3a1f1f; }
+  body.theme-catdark .word-row .wcount.pcnt{ color:#8fe0bd; background:#1d3a2a; }
   body.theme-catdark .dict-fail-summary{ background:#2a2342; border-color:#7a3a36; }
   body.theme-catdark .dfs-head{ color:#ff9f8a; }
   body.theme-catdark .dfs-list .word-row .wunit{ color:#ffb98a; background:#332a4e; }
@@ -845,7 +846,8 @@
   .wdot.pass{ background:#23b14e; border-color:#157a35; color:#fff; box-shadow:0 1px 5px rgba(35,177,78,.5); }
   .wdot.fail{ background:#ff3b30; border-color:#b3160f; color:#fff; box-shadow:0 1px 5px rgba(255,59,48,.5); }
   .word-row .wcount{ font-size:11px; font-weight:700; color:#d3321f; background:#fff0ec; padding:1px 7px; border-radius:999px; margin-left:2px; }
-  .word-row.pass .wcount{ display:none; }
+  .word-row .wcount.pcnt{ color:#1a8a40; background:#e5f7ec; }   /* 三次过关进度：过×N */
+  .word-row.pass .wcount{ opacity:.75; }   /* 已过关仍显示「失×N」历史未过记录（略微淡化） */
   .dict-fail-summary{ background:#fff; border:1px dashed #f5c2bb; border-radius:12px; padding:4px 10px 10px; }
   .dfs-head{ font-size:13px; font-weight:700; color:#d3321f; padding:8px 4px 8px; }
   .dfs-list{ display:flex; flex-direction:column; gap:8px; }
@@ -1283,13 +1285,14 @@
     <div class="stab-pane" data-pane="dict" data-page-node-id="S0rnxazHGfewTukmjm2RXj">
       <!-- CPP3 听写单词 · 红绿点过关 -->
       <div class="dict-card" id="cppDictCard" data-page-node-id="gwi06ffaKyBBEY2iwqR0Km">
-        <div class="dict-title" data-page-node-id="AAtSqqmoWIs1ALLuj66ZXh">🐾 听写单词 · 红绿点过关 <span class="hint" data-page-node-id="dfZmpFbtXgxBAyr9D1vUwB">🟢 过关　🔴 未过（点红可累计次数）</span></div>
+        <div class="dict-title" data-page-node-id="AAtSqqmoWIs1ALLuj66ZXh">🐾 听写单词 · 红绿点过关 <span class="hint" data-page-node-id="dfZmpFbtXgxBAyr9D1vUwB">🟢 通过　🔴 未过（点红累计次数；未过记录过关后仍保留）</span></div>
         <div class="dict-stats" id="dictStats" data-page-node-id="GC9BDKycsBfSwyo9RDqMfM"></div>
         <div class="dict-filter" id="dictFilter" data-page-node-id="CDXhe7SOxYsRwgqaHxHO9b">
           <button class="df" data-df="all" data-page-node-id="9svW6tGVBCZv5k3UphYBcz">全部</button>
           <button class="df active" data-df="todo" data-page-node-id="oBO5XL4HfMwGr6acEsvPcm">待听写</button>
           <button class="df" data-df="pass" data-page-node-id="rgoJ7hNWGAh5B0a0TKu9aZ">已过关</button>
           <button class="df" data-df="fail" data-page-node-id="fuV9hOJzBWj4IrzN7kd24q">未过关</button>
+          <button class="df rule-btn" id="dictRuleBtn" title="开启后：同一单词需连续 3 次听写通过才算过关，中途未过则进度清零">⏱ 三次过关：开</button>
         </div>
         <div class="cw-add" data-page-node-id="5ej6DDBKE7z4GXxb8wYK2l">
           <textarea class="cw-input" data-cw-input rows="2" placeholder="手动添加单词/词组/句子（一行或逗号分隔一条；含空格的作为词组或句子整体；回车添加，Shift+回车换行）"></textarea>
@@ -3740,6 +3743,7 @@ function seed(){
       { id:"r_cpp_1", subj:"cpp3", title:"单词听写", freq:"weekly", day:5, note:"", reward:1 },
       { id:"r_cpp_2", subj:"cpp3", title:"教材学习", freq:"weekly", day:2, note:"", reward:2 },
       { id:"r_cpp_read", subj:"cpp3", title:"朗读", freq:"weekly", quota:2, note:"", reward:1 },
+      { id:"r_cpp_lis", subj:"cpp3", title:"Listeneer", freq:"daily", day:null, note:"", reward:1 },
     ],
     weekPlan:{},
     deletedGen:[],         /* 已删除的周期性生成任务 genKey（按日），生成时跳过，使「删除某天实例」持久生效 */
@@ -3747,6 +3751,7 @@ function seed(){
     onlineMode:true,
     onlineCache:{ quote:"", fetched:"" },
     cppDict:{},
+    cppDictRule:3,       /* 听写过关规则：3=连续 3 次通过才过关（中途未过进度清零）/ 1=1 次通过即过关 */
     cppCustomWords:[],
     autoSync:false,
     weekDragMode:false,   /* 周计划「拖动模式」：开启后可把任务从某天拖到另一天 */
@@ -3830,12 +3835,55 @@ function load(){
           if(m){ r.freq="weekly"; r.quota=m.quota; r.title=m.title; r.subj="cpp3"; if("day" in r) delete r.day; changed=true; }
         });
       }
-      /* 删除旧的英语杂乱种子/重复任务（仅未完成者，保留历史已完成记录） */
+      /* 删除旧的英语杂乱种子/重复任务（仅未完成者，保留历史已完成记录）
+         注：「听 Listeneer」已按用户要求恢复为每日例行（见下方补种逻辑），不再删除 */
       if(Array.isArray(s.tasks)){
-        const REMOVE=["听 Listeneer","英语朗读一篇","英语朗读课文"];
+        const REMOVE=["英语朗读一篇","英语朗读课文"];
         const before=s.tasks.length;
         s.tasks=s.tasks.filter(t=>!(REMOVE.includes(t.title) && t.subj==="cpp3" && !t.done));
         if(s.tasks.length!==before) changed=true;
+      }
+      /* 「Listeneer」恢复为每日例行（1 喵粮/次）：老数据补种定义；
+         并与前面已打卡的日子续接：从最后一次完成日的次日到昨天，逐日补成已完成（中间不留间断）。 */
+      if(!Array.isArray(s.deletedGen)) s.deletedGen=[];
+      if(!s.routines.some(r=>r.id==="r_cpp_lis" || r.title==="听 Listeneer" || r.title==="Listeneer")){
+        s.routines.push({id:"r_cpp_lis", subj:"cpp3", title:"Listeneer", freq:"daily", day:null, note:"", reward:1, _u:Date.now()});
+        changed=true;
+      }
+      /* 一次性续接补齐：仅当数据中还存在旧标题「听 Listeneer」时执行（被改名后不再触发） */
+      if((s.routines||[]).some(r=>r.title==="听 Listeneer") || (s.tasks||[]).some(t=>t.title==="听 Listeneer")){
+        const _lisToday=ldk(new Date());
+        /* 清掉此前「不补账」写入的 deletedGen（仅限今天以前，避免误清用户对今天/未来实例的删除） */
+        const _dg=s.deletedGen.filter(g=>!(typeof g==="string" && g.indexOf("r_cpp_lis@")===0 && g.slice(10,20)<_lisToday));
+        if(_dg.length!==s.deletedGen.length){ s.deletedGen=_dg; changed=true; }
+        /* 找最早与最后一次完成的 Listeneer 日期（genKey r_cpp_lis@日期 或 旧标题完成项的 due），
+           从最早完成日到昨天逐日补成已完成，整段历史不留间断 */
+        let _lisFirst=null,_lisLast=null;
+        (s.tasks||[]).forEach(t=>{
+          if(!t.done) return;
+          let _d=null;
+          if(typeof t.genKey==="string" && t.genKey.indexOf("r_cpp_lis@")===0) _d=t.genKey.slice(10,20);
+          else if(t.title==="听 Listeneer" && typeof t.due==="string") _d=t.due.slice(0,10);
+          if(_d && /^\d{4}-\d{2}-\d{2}$/.test(_d)){
+            if(_lisFirst===null || _d<_lisFirst) _lisFirst=_d;
+            if(_lisLast===null || _d>_lisLast) _lisLast=_d;
+          }
+        });
+        if(_lisFirst && _lisLast && _lisFirst<_lisToday){
+          const _d2=new Date(_lisFirst+"T00:00:00");
+          for(let _cur=_lisFirst;;){
+            _d2.setDate(_d2.getDate()+1); _cur=ldk(_d2);
+            if(_cur>=_lisToday) break;
+            const _gk="r_cpp_lis@"+_cur;
+            s.deletedGen=s.deletedGen.filter(g=>g!==_gk);
+            const _ex=s.tasks.find(t=>t.genKey===_gk);
+            if(_ex){ if(!_ex.done){ _ex.done=true; changed=true; } }
+            else {
+              s.tasks.push({id:tid(),title:"Listeneer",subj:"cpp3",due:_cur,pri:"low",done:true,genKey:_gk,note:"",reward:1,_u:Date.now()});
+              changed=true;
+            }
+          }
+        }
       }
       /* 任务/例行标题改名：统一为「朗读 / 单词听写 / 教材学习」（覆盖旧种子与用户手动添加的数据） */
       const TASK_RENAME={
@@ -3843,7 +3891,8 @@ function load(){
         "英语朗读课文":"朗读",
         "英语朗读一篇":"朗读",
         "英语单词听写":"单词听写",
-        "英语教材内容":"教材学习"
+        "英语教材内容":"教材学习",
+        "听 Listeneer":"Listeneer"
       };
       if(Array.isArray(s.tasks)){
         s.tasks.forEach(t=>{ if(TASK_RENAME[t.title]){ t.title=TASK_RENAME[t.title]; changed=true; } });
@@ -3989,6 +4038,7 @@ function load(){
       if(!s.savedAt){ s.savedAt=0; changed=true; }
       /* CPP3 听写单词过关状态 */
       if(!s.cppDict || typeof s.cppDict!=="object"){ s.cppDict={}; changed=true; }
+      if(typeof s.cppDictRule!=="number" || [1,3].indexOf(s.cppDictRule)<0){ s.cppDictRule=3; changed=true; }   /* 老数据补默认：三次过关 */
       /* 手动添加单词（Other Key Words） */
       if(!Array.isArray(s.cppCustomWords)){ s.cppCustomWords=[]; changed=true; }
       /* 周计划字段：旧数据可能为 null，确保为对象；并把旧模型 {0:[],…,6:[]} 迁移为新模型 {items:[{id,text,note,days:[],done:{}}]} */
@@ -4208,7 +4258,7 @@ function save(){ persistLocal(); if(state.autoSync && state.syncToken && state.s
 const GH_API="https://api.github.com";
 const SYNC_DESC="youyou-workbench-sync";
 const SYNC_FILE="state.json";
-const SYNC_FIELDS=["student","subjects","tasks","routines","checkins","checkinsAt","mistakes","weekPlan","cppDict","cppCustomWords","sunAdjust","sunBase","sunLog","onlineMode","onlineCache","deletedGen","planStart","theme","weekDragMode","fieldAt","tomb"];
+const SYNC_FIELDS=["student","subjects","tasks","routines","checkins","checkinsAt","mistakes","weekPlan","cppDict","cppDictRule","cppCustomWords","sunAdjust","sunBase","sunLog","onlineMode","onlineCache","deletedGen","planStart","theme","weekDragMode","fieldAt","tomb"];
 function ghAuth(t){ return { "Authorization":"token "+t, "Content-Type":"application/json", "Accept":"application/vnd.github+json" }; }
 async function ghJSON(url, opts){
   const r=await fetch(url, opts);
@@ -4259,7 +4309,7 @@ function localHasRecord(){
 function recU(o){ return (o && typeof o._u==="number") ? o._u : 0; }
 function snapOf(o){ const c={}; for(const k in o){ if(k==="_u"||k==="icon") continue; c[k]=o[k]; } return JSON.stringify(c); }
 const SYNC_KINDS=["tasks","routines","mistakes","subjects"];
-const SCALAR_FIELDS=["student","theme","onlineMode","weekDragMode","planStart","cppDict","onlineCache","ai"];
+const SCALAR_FIELDS=["student","theme","onlineMode","weekDragMode","planStart","cppDict","cppDictRule","onlineCache","ai"];
 const TOMB_KEEP_DAYS=180;
 function eachRecord(fn){
   SYNC_KINDS.forEach(k=>{ (Array.isArray(state[k])?state[k]:[]).forEach(o=>{ if(o&&o.id) fn(o,k); }); });
@@ -5966,11 +6016,13 @@ function dictKey(unit, word){ return unit+"|"+word.toLowerCase(); }
 function dictGet(unit, word){
   if(!state.cppDict) state.cppDict={};
   const k = dictKey(unit, word);
-  return state.cppDict[k] || { status:null, failCount:0, lastDate:"" };
+  /* passCount = 「三次过关」模式的连续通过次数；老数据没有该字段，默认 0（failCount 历史一直保留，不清零） */
+  return Object.assign({ status:null, failCount:0, passCount:0, lastDate:"" }, state.cppDict[k]||{});
 }
-function dictSet(unit, word, status, failCount, lastDate){
+function dictSet(unit, word, rec){
   if(!state.cppDict) state.cppDict={};
-  state.cppDict[dictKey(unit, word)] = { status, failCount, lastDate };
+  const cur = dictGet(unit, word);
+  state.cppDict[dictKey(unit, word)] = Object.assign(cur, rec||{});
 }
 /* 听写单词全部来源：内置 Unit 1-9（含 CPRA3） + 手动添加的 Other Key Words。
    自定义单词存于 state.cppCustomWords（数组），过关状态仍走 dictGet/dictSet（unit="Other"）。 */
@@ -5992,25 +6044,31 @@ function allDictUnits(){
   return units;
 }
 function dictStats(){
-  let total=0, pass=0, fail=0, todo=0, totalFails=0;
+  let total=0, pass=0, fail=0, todo=0, totalFails=0, midway=0;
+  const rule = state.cppDictRule===1 ? 1 : 3;
   allDictGroups().forEach(g=>g.words.forEach(w=>{
     total++;
     const d=dictGet(g.unit, w);
     if(d.status==="pass") pass++;
     else if(d.status==="fail"){ fail++; totalFails += (d.failCount||0); }
-    if(d.status!=="pass") todo++;   /* 待听 = 尚未过关（未标记 + 未过关），与「待听写」默认视图一致 */
+    if(d.status!=="pass"){
+      todo++;   /* 待听 = 尚未过关（未标记 + 未过关），与「待听写」默认视图一致 */
+      if(rule===3 && (d.passCount||0)>0) midway++;   /* 三过中：已通过 1-2 次、还没凑满 3 次 */
+    }
   }));
-  return { total, pass, fail, todo, totalFails };
+  return { total, pass, fail, todo, totalFails, midway };
 }
 function renderCppDictation(){
   const card = document.getElementById("cppDictCard");
   if(!card) return;
+  const rule = state.cppDictRule===1 ? 1 : 3;
   const st = dictStats();
   $("#dictStats").innerHTML =
     `<span class="ds">共 <b>${st.total}</b> 词</span>`+
     `<span class="ds ok">已过 <b>${st.pass}</b></span>`+
     `<span class="ds no">未过 <b>${st.fail}</b></span>`+
     `<span class="ds">待听 <b>${st.todo}</b></span>`+
+    (rule===3 ? `<span class="ds ok">三过中 <b>${st.midway}</b></span>` : "")+
     `<span class="ds bad">累计未过 <b>${st.totalFails}</b> 次</span>`;
   const list = $("#dictList");
   /* 未过关视图：扁平汇总，不按单元分组，方便集中复习 */
@@ -6023,7 +6081,7 @@ function renderCppDictation(){
           const k = dictKey(g.unit, w);
           rows.push(`<div class="word-row fail" data-key="${k}" data-unit="${esc(g.unit)}" data-word="${esc(w)}">
             <div class="wr-top"><span class="wname">${esc(w)}</span>
-            <button class="wdot pass" data-mark="pass" title="过关">✓</button>
+            <button class="wdot pass" data-mark="pass" title="通过（三次过关模式下计入进度）">✓</button>
             <button class="wdot fail fail" data-mark="fail" title="未过">✗</button>
             ${d.failCount>0 ? `<span class="wcount">失×${d.failCount}</span>` : ""}</div>
             <div class="wr-note"><span class="wunit">${esc(g.unit)}·${esc(g.topic)}</span></div>
@@ -6067,9 +6125,10 @@ function renderCppDictation(){
         return `<div class="word-row ${rowCls}" data-key="${k}" data-unit="${esc(g.unit)}" data-word="${esc(w)}">
           <span class="wname">${esc(w)}</span>
           ${g.custom ? `<button class="cw-del" data-cw-del="${esc(w)}" title="删除此单词">✕</button>` : ""}
-          <button class="wdot pass ${passOn}" data-mark="pass" title="过关">✓</button>
+          <button class="wdot pass ${passOn}" data-mark="pass" title="通过（三次过关模式下计入进度）">✓</button>
           <button class="wdot fail ${failOn}" data-mark="fail" title="未过">✗</button>
-          ${d.status==="fail" && d.failCount>0 ? `<span class="wcount">失×${d.failCount}</span>` : ""}
+          ${d.failCount>0 ? `<span class="wcount">失×${d.failCount}</span>` : ""}
+          ${(d.status!=="pass" && (d.passCount||0)>0) ? `<span class="wcount pcnt">过×${d.passCount}</span>` : ""}
         </div>`;
       }).join("");
       const _empty = (g.custom && matchWords.length===0) ? `<div class="empty" style="padding:10px 4px;">（还没有手动添加的单词/词组/句子，用上方输入框添加）</div>` : "";
@@ -6095,6 +6154,7 @@ function renderCppDictation(){
   bindDictation(card);
 }
 function bindDictation(root){
+  const rule = state.cppDictRule===1 ? 1 : 3;
   /* 折叠切换：同步记录状态，避免点红/绿点重渲染后被收回 */
   root.querySelectorAll(".dict-group-head").forEach(h=>{
     h.onclick = ()=>{
@@ -6104,19 +6164,20 @@ function bindDictation(root){
     };
   });
   /* 筛选按钮 */
-  root.querySelectorAll(".df").forEach(x=>x.classList.toggle("active", x.dataset.df===_dictFilter));  /* 同步 active 与当前筛选 */
-  root.querySelectorAll(".df").forEach(b=>{
+  root.querySelectorAll(".df[data-df]").forEach(x=>x.classList.toggle("active", x.dataset.df===_dictFilter));  /* 同步 active 与当前筛选（排除「三次过关」开关） */
+  root.querySelectorAll(".df[data-df]").forEach(b=>{
     b.onclick = ()=>{
-      root.querySelectorAll(".df").forEach(x=>x.classList.remove("active"));
+      root.querySelectorAll(".df[data-df]").forEach(x=>x.classList.remove("active"));
       b.classList.add("active");
       _dictFilter = b.dataset.df;
       renderCppDictation();
     };
   });
   /* 红绿点：点 pass / fail
-   * - 点红：永远是 +1 累计（任何状态下点击都算一次新未关）
-   * - 点绿：从 fail / null → 标记为 pass，并清零 failCount（过关！掌握后重新开始）
-   * - 点绿：已是 pass → 取消标记
+   * - 点红：永远是 +1 累计（任何状态下点击都算一次新未关）；三次过关模式下同时清零连续通过进度
+   * - 点绿：通过一次。三次过关模式(默认)下需连续通过 3 次才算过关（中途点红进度清零）；一次过关模式点 1 次即过关
+   * - 未过记录(failCount)永久保留：过关后仍显示「失×N」历史，不再清零
+   * - 已过关后再点绿 = 取消过关标记（进度清零重来）
    */
   root.querySelectorAll(".wdot").forEach(btn=>{
     btn.onclick = (e)=>{
@@ -6127,24 +6188,43 @@ function bindDictation(root){
       const cur = dictGet(unit, word);
       const today = dateStr(0);
       if(mark==="fail"){
-        /* 红点：+1 累计 */
+        /* 红点：+1 累计，并清零连续通过进度 */
         const nc = (cur.failCount||0)+1;
-        dictSet(unit, word, "fail", nc, today);
-        toast(`🔴 ${word} · 本次未过，累计 ${nc} 次`);
+        const hadProg = (cur.passCount||0)>0;
+        dictSet(unit, word, { status:"fail", failCount:nc, passCount:0, lastDate:today });
+        toast(`🔴 ${word} · 本次未过，累计 ${nc} 次${hadProg ? "，过关进度已清零" : ""}`);
       } else {
-        /* 绿点：标记 pass 并清零；从 pass 再点 = 取消 */
         if(cur.status==="pass"){
-          dictSet(unit, word, null, 0, "");
-          toast(`🟢 ${word} · 取消标记`);
+          /* 已过关再点绿：取消标记 */
+          dictSet(unit, word, { status:null, passCount:0, lastDate:"" });
+          toast(`🟢 ${word} · 取消过关标记（历史未过 ${cur.failCount||0} 次仍保留）`);
         } else {
-          dictSet(unit, word, "pass", 0, today);
-          toast(`🟢 ${word} · 过关！${(cur.failCount||0)>0 ? "已清零 "+cur.failCount+" 次未过记录" : ""}`);
+          const np = (cur.passCount||0)+1;
+          if(np>=rule){
+            dictSet(unit, word, { status:"pass", passCount:np, lastDate:today });
+            toast(`🟢 ${word} · 第 ${np} 次通过，过关！${(cur.failCount||0)>0 ? `（历史未过 ${cur.failCount} 次已保留）` : ""}`);
+          } else {
+            dictSet(unit, word, { status:null, passCount:np, lastDate:today });
+            toast(`🟢 ${word} · 第 ${np} 次通过，还差 ${rule-np} 次过关`);
+          }
         }
       }
       save();
       renderCppDictation();
     };
   });
+  /* 「三次过关」开关：开=需连续通过 3 次（默认）；关=1 次通过即过关。未过记录两种模式下都保留 */
+  const ruleBtn = root.querySelector("#dictRuleBtn");
+  if(ruleBtn){
+    ruleBtn.classList.toggle("active", rule===3);
+    ruleBtn.textContent = rule===3 ? "⏱ 三次过关：开" : "⏱ 三次过关：关";
+    ruleBtn.onclick = ()=>{
+      state.cppDictRule = (rule===3) ? 1 : 3;
+      save();
+      renderCppDictation();
+      toast(state.cppDictRule===3 ? "⏱ 已开启：连续 3 次通过才过关（未过记录仍保留）" : "已关闭：1 次通过即过关（未过记录仍保留）");
+    };
+  }
   /* 自定义单词删除（Other Key Words 行内的 ✕） */
   root.querySelectorAll(".cw-del").forEach(btn=>{
     btn.onclick = (e)=>{
@@ -6152,7 +6232,7 @@ function bindDictation(root){
       const w = btn.dataset.cwDel;
       const low = (w||"").toLowerCase();
       state.cppCustomWords = state.cppCustomWords.filter(x=>x.toLowerCase()!==low);
-      dictSet("Other", w, null, 0, "");   /* 清理该词的过关状态 */
+      dictSet("Other", w, { status:null, failCount:0, passCount:0, lastDate:"" });   /* 清理该词的过关状态 */
       save();
       renderCppDictation();
       toast(`🗑 已删除「${w}」`);
