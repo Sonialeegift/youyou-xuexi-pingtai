@@ -4652,16 +4652,15 @@ const $ = s=>document.querySelector(s);
 const subjById = id=>state.subjects.find(s=>s.id===id);
 function toast(m){ const t=$("#toast"); t.textContent=m; t.classList.add("show"); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("show"),1600); }
 
-/* ===== 补打卡 / 修改非当日任务：密码 0704 验证 ===== */
+/* ===== 补打卡 / 修改非当日任务（密码验证已取消，直接执行） ===== */
 const LOCK_PWD = "0704";
 let _lockCb = null;
 /* 判断某个任务是否「当日」：due 等于今天，或今天（含）之前已完成的任务（不回弹已完成项） */
 function isTodayTask(t){ return t && t.due === dateStr(0); }
-/* 处理一次「可能受保护」的打卡/修改动作：当日任务直接执行；非当日任务需密码 */
+/* 处理一次「可能受保护」的打卡/修改动作：密码验证已按用户要求取消，直接执行 */
 function guardTaskAction(t, action, reasonText){
   if(!t) return;
-  if(isTodayTask(t)){ action(); return; }            /* 当日任务：直接打卡，无需密码 */
-  askLock(reasonText || "这是非当日任务，补打卡或修改需要家长验证。", action);
+  action();
 }
 function askLock(reason, cb){
   _lockCb = cb;
